@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3
+
+- Display no longer dims while reading. During playback the plugin was silent on
+  the bus between buffer pages (several seconds with no surface activity), so the
+  glasses dimmed mid-read while a paused screen — freshly updated on the pause
+  tap — stayed lit. The reader now emits a keep-alive anchor resync every ~1.5 s
+  while playing, keeping the hub rendering (and the display awake) throughout a
+  read; the resync also corrects any small playback-clock drift.
+
 ## 1.0.2
 
 Second round of on-device fixes.

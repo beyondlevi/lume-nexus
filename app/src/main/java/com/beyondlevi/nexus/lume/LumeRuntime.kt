@@ -266,17 +266,18 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
             return
         }
         maybePersist()
-        ensureWindow(cur)
-    }
-
-    /** Pages the buffer forward when the read head nears the end of the window. */
-    private fun ensureWindow(current: Int) {
-        val m = model ?: return
-        val needsSlide = current < windowRange.first || current >= windowRange.last - WINDOW_MARGIN
-        if (!needsSlide) return
+        // Re-anchor to the live position every tick. Two purposes: page the buffer
+        // forward when the read head nears the window end, and — between pages —
+        // emit a keep-alive resync so the hub keeps rendering (and the display stays
+        // awake) while reading. Without this the plugin goes silent between slides
+        // and the glasses dim mid-read.
         reanchorToNow(m)
-        windowRange = m.windowRange(current)
-        renderReader()
+        if (cur < windowRange.first || cur >= windowRange.last - WINDOW_MARGIN) {
+            windowRange = m.windowRange(cur)
+            renderReader()
+        } else {
+            host.updateTimedLinesAnchor(contentKey, anchor())
+        }
     }
 
     private fun renderReader() {
@@ -394,12 +395,12 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     }
 
     private companion object {
-        const val TICK_MS = 750L
+        const val TICK_MS = 1_500L
         const val PERSIST_INTERVAL_MS = 4_000L
         // Buffer sizing: kept small so each surface payload stays under the 3 KiB
         // CXR control-message ceiling (works without the SPP data plane).
         const val WINDOW_WORDS = 60
-        const val WINDOW_MARGIN = 18
+        const val WINDOW_MARGIN = 25
         const val LINE_BYTE_BUDGET = 1_900
         const val PER_LINE_OVERHEAD_BYTES = 26
         const val MAX_TITLE_CHARS = 120
