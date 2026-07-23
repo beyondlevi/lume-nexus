@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.4
+
+Maintainer review fixes (Nexus Store).
+
+- Settings header now reads the real `versionName` from the package manager
+  instead of a hardcoded string, so it never drifts from the actual version.
+- Launcher and monochrome app icon now use Lume's own RSVP glyph everywhere:
+  `ic_launcher_foreground` is an `<inset>` of the new monochrome
+  `@drawable/nexus_glyph_lume` (was the generic scaffold glyph).
+
 ## 1.0.3
 
 - Display no longer dims while reading. During playback the plugin was silent on

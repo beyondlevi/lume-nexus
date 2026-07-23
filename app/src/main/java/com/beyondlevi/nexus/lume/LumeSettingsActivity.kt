@@ -94,7 +94,7 @@ class LumeSettingsActivity : Activity() {
                     ctx,
                     NexusPluginIcons.drawableFor("bookmark"),
                     "Lume",
-                    "Glanceable RSVP reader · v1.0",
+                    "Glanceable RSVP reader · v${versionName()}",
                 ),
                 NexusUi.block(),
             )
@@ -214,6 +214,10 @@ class LumeSettingsActivity : Activity() {
     private fun uninstallRow() = NexusUi.uninstallCard(this, "Lume") {
         startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:$packageName")))
     }
+
+    /** Real versionName from the package manager — never hardcode it (avoids header drift). */
+    private fun versionName(): String =
+        runCatching { packageManager.getPackageInfo(packageName, 0).versionName }.getOrNull().orEmpty()
 
     private fun pickFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
