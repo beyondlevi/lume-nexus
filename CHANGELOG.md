@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.0.2
+
+Second round of on-device fixes.
+
+- Reader now streams as a **sliding buffer**. On a CXR-only link the hub rejects
+  any JSON surface larger than 3 KiB (it needs the SPP data plane), which is why
+  documents past ~100 words never rendered. The reader now sends a small
+  ~60-word window with per-window relative timestamps (well under 3 KiB), plays
+  it on the glasses clock, and pages the next window in before the read head
+  runs out — reading of arbitrary-length documents works without SPP.
+- Documents open **paused**; a tap starts playback (was auto-playing on open).
+- Removing a document no longer blanks the settings screen: the rebuild is now
+  deferred off the click dispatch instead of tearing down the view mid-click.
+- Reading progress is persisted on a throttle while playing, and the buffer
+  re-anchors to the live position on each page so playback stays seamless.
+
 ## 1.0.1
 
 Fixes from first on-device testing.

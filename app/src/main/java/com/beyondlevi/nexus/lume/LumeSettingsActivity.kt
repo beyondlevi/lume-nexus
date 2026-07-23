@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.ViewGroup
 import android.widget.LinearLayout
 import com.anezium.rokidbus.client.ui.BusTheme
@@ -20,6 +22,7 @@ class LumeSettingsActivity : Activity() {
 
     private lateinit var store: DocumentStore
     private lateinit var settings: SettingsStore
+    private val ui = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -33,8 +36,17 @@ class LumeSettingsActivity : Activity() {
     override fun onResume() {
         super.onResume()
         // Reflect documents added since the screen was built (e.g. via the share target).
-        store.reload()
-        buildUi()
+        rebuild()
+    }
+
+    /**
+     * Rebuilds the screen off the current input dispatch. A row action (e.g.
+     * Remove) replaces the whole view tree via setContentView; doing that
+     * synchronously inside the click destroys the very view handling the click
+     * and leaves a blank screen, so defer to the next loop.
+     */
+    private fun rebuild() {
+        ui.post { buildUi() }
     }
 
     private fun buildUi() {
@@ -104,7 +116,7 @@ class LumeSettingsActivity : Activity() {
                 NexusUi.outlinePillButton(ctx, "Faster +${RsvpEngine.WPM_STEP}").apply {
                     setOnClickListener {
                         settings.defaultWpm = settings.defaultWpm + RsvpEngine.WPM_STEP
-                        buildUi()
+                        rebuild()
                     }
                 },
                 NexusUi.block(),
@@ -114,7 +126,7 @@ class LumeSettingsActivity : Activity() {
                 NexusUi.outlinePillButton(ctx, "Slower -${RsvpEngine.WPM_STEP}").apply {
                     setOnClickListener {
                         settings.defaultWpm = settings.defaultWpm - RsvpEngine.WPM_STEP
-                        buildUi()
+                        rebuild()
                     }
                 },
                 NexusUi.block(),
@@ -129,7 +141,7 @@ class LumeSettingsActivity : Activity() {
                 NexusUi.pillButton(ctx, if (settings.language == "pt") "Switch to English" else "Mudar para Português").apply {
                     setOnClickListener {
                         settings.language = if (settings.language == "pt") "en" else "pt"
-                        buildUi()
+                        rebuild()
                     }
                 },
                 NexusUi.block(),
@@ -190,7 +202,7 @@ class LumeSettingsActivity : Activity() {
                     NexusUi.textButton(ctx, "Remove", danger = true).apply {
                         setOnClickListener {
                             store.delete(doc.id)
-                            buildUi()
+                            rebuild()
                         }
                     },
                     NexusUi.block(),
@@ -226,7 +238,7 @@ class LumeSettingsActivity : Activity() {
                 if (extracted != null && extracted.text.isNotBlank()) {
                     store.add(extracted.title, extracted.text, extracted.source)
                 }
-                buildUi()
+                rebuild()
             }
         }.start()
     }
@@ -234,7 +246,7 @@ class LumeSettingsActivity : Activity() {
     private fun addInBackground(title: String, text: String, source: String) {
         Thread {
             store.add(title, text, source)
-            runOnUiThread { buildUi() }
+            runOnUiThread { rebuild() }
         }.start()
     }
 

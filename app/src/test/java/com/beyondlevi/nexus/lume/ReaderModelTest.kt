@@ -58,11 +58,20 @@ class ReaderModelTest {
     fun windowRangeStaysWithinBoundsAndCarriesBackContext() {
         val big = List(1000) { "w$it" }
         val m = ReaderModel(big, 350)
-        val near = m.windowRange(10, windowSize = 800)
+        val near = m.windowRange(5, windowSize = 60)
         assertEquals(0, near.first)                 // clamps at the start
-        assertEquals(800, near.count())             // full window width (800 words)
-        val mid = m.windowRange(500, windowSize = 800)
-        assertEquals(440, mid.first)                // 500 - BACK_CONTEXT(60)
+        assertEquals(60, near.count())              // full window width (60 words)
+        val mid = m.windowRange(500, windowSize = 60)
+        assertEquals(488, mid.first)                // 500 - BACK_CONTEXT(12)
+        assertEquals(60, mid.count())               // look-ahead ahead of the read head
         assertTrue(mid.last < big.size)
+    }
+
+    @Test
+    fun defaultWindowIsSmallEnoughToStreamOverCxr() {
+        val big = List(1000) { "word$it" }
+        val m = ReaderModel(big, 350)
+        assertEquals(ReaderModel.DEFAULT_WINDOW, m.windowRange(500).count())
+        assertTrue("window must stay small for a CXR-only link", m.windowRange(500).count() <= 80)
     }
 }

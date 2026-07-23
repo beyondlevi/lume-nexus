@@ -16,21 +16,27 @@ import java.security.MessageDigest
  * that renders declarative Nexus surfaces and drives RSVP playback through the
  * time-synced surface's playback anchor.
  *
+ * ## Buffered streaming (the important part)
+ *
+ * The hub only carries JSON surfaces larger than 3 KiB over the SPP data plane;
+ * when SPP is not connected it rejects them (`NO_DATA_PLANE`). CXR — always
+ * available — caps a control message at 3 KiB. So a whole document (or even a
+ * few hundred words) cannot be sent as one timed-lines surface on a CXR-only
+ * link.
+ *
+ * Lume therefore streams the reader as a **sliding buffer**: it sends a small
+ * window (~60 words, comfortably under 3 KiB, with per-window relative
+ * timestamps) that the glasses hub plays on its own clock, and pages the next
+ * window in via `updateTimedLines` before the read head runs out — the Nexus
+ * equivalent of the original app's word-window buffering, but bounded by the
+ * CXR control-message size rather than the radio.
+ *
  * Ring mapping (R08 Access Bridge), mirroring the original touchpad:
  *  - LIBRARY: NEXT/PREV move selection, SELECT opens the focused document,
  *    BACK exits the plugin.
  *  - READER:  SELECT toggles play/pause; while playing NEXT/PREV change speed;
- *    while paused NEXT/PREV step sentences; BACK exits the plugin.
- *
- * Platform note: a timed-lines surface cannot intercept BACK (the hub hides it
- * on BACK), so — like the shipped Lyrics plugin — BACK from the reader closes
- * the plugin rather than returning to the library. Re-open Lume to pick another
- * document.
- *
- * Surface protocol (matches the shipped Transit/Lyrics plugins): a single
- * surface id, shown once per session and updated thereafter; the card->timed
- * transition goes through updateTimedLines, and play/pause/seek go through the
- * anchor-only update.
+ *    while paused NEXT/PREV step sentences; BACK exits the plugin. Documents
+ *    open paused; a tap starts playback.
  */
 class LumeRuntime(private val host: Host, private val store: DocumentStore, private val settings: SettingsStore) {
 
@@ -49,7 +55,8 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     private val library = LibrarySelection()
     private var documents: List<DocumentInfo> = emptyList()
 
-    // Reader session state.
+    // Reader session state. Positions are tracked in ABSOLUTE document ms; the
+    // surface payload uses per-window RELATIVE times to keep it small.
     private var model: ReaderModel? = null
     private var docId: String = ""
     private var docTitle: String = ""
@@ -59,6 +66,7 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     private var sentAtElapsed: Long = 0L
     private var windowRange: IntRange = IntRange.EMPTY
     private var contentKey: String = ""
+    private var lastPersistElapsed: Long = 0L
 
     private val handler = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -196,12 +204,12 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         model = m
         val resume = doc.progressWordIndex.coerceIn(0, (m.size - 1).coerceAtLeast(0))
         anchorPosMs = m.posMsForWord(resume)
-        playing = true
+        playing = false // open paused; a tap starts playback
         sentAtElapsed = SystemClock.elapsedRealtime()
         windowRange = m.windowRange(resume)
         view = View.READER
         renderReader()
-        startTicker()
+        // No ticker until playback starts.
     }
 
     private fun togglePlayback() {
@@ -224,7 +232,8 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         anchorPosMs = m.posMsForWord(cur)
         sentAtElapsed = SystemClock.elapsedRealtime()
         // Timeline changed for the whole window -> resend it (new contentKey).
-        ensureWindow(cur, forceResend = true)
+        windowRange = m.windowRange(cur)
+        renderReader()
     }
 
     private fun stepSentence(dir: Int) {
@@ -237,7 +246,8 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         if (target in windowRange) {
             host.updateTimedLinesAnchor(contentKey, anchor())
         } else {
-            ensureWindow(target, forceResend = true)
+            windowRange = m.windowRange(target)
+            renderReader()
         }
         persistProgress()
     }
@@ -255,17 +265,16 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
             stopTicker()
             return
         }
-        persistProgress()
-        ensureWindow(cur, forceResend = false)
+        maybePersist()
+        ensureWindow(cur)
     }
 
-    /** Slides the surface window when the read head nears its end (or falls outside it). */
-    private fun ensureWindow(current: Int, forceResend: Boolean) {
+    /** Pages the buffer forward when the read head nears the end of the window. */
+    private fun ensureWindow(current: Int) {
         val m = model ?: return
-        val needsSlide = forceResend ||
-            current < windowRange.first ||
-            current >= windowRange.last - WINDOW_MARGIN
+        val needsSlide = current < windowRange.first || current >= windowRange.last - WINDOW_MARGIN
         if (!needsSlide) return
+        reanchorToNow(m)
         windowRange = m.windowRange(current)
         renderReader()
     }
@@ -273,59 +282,83 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     private fun renderReader() {
         val m = model ?: return
         if (windowRange.isEmpty()) windowRange = m.windowRange(currentIndex(m))
-        // Build the timed lines within a byte budget so the surface payload never
-        // exceeds the hub's 64 KiB ceiling (which would reject the whole surface).
-        val emitted = boundedLines(m, windowRange)
+        val baseMs = m.posMsForWord(windowRange.first)
+        // Small window with per-window relative times, kept well under the 3 KiB
+        // CXR control-message ceiling so it survives on a CXR-only link.
+        val emitted = boundedLines(m, windowRange, baseMs)
         windowRange = windowRange.first until (windowRange.first + emitted.size)
         contentKey = shortHash("rd:$docId:$wpm:${windowRange.first}:${windowRange.last}")
         val lang = settings.language
         val cur = currentIndex(m)
         val pct = if (m.size > 0) cur * 100 / m.size else 0
         val surface = NexusTimedLines(
-            title = docTitle.ifBlank { "Lume" }.take(MAX_TITLE_CHARS),
+            title = docTitle.ifBlank { "Lume" }.take(READER_TITLE_CHARS),
             contentKey = contentKey,
             lines = emitted,
-            anchor = anchor(),
+            anchor = anchor(baseMs),
             subtitle = "$wpm wpm · $pct%",
             footer = if (playing) Strings.readerPlayingFooter(lang) else Strings.readerPausedFooter(lang),
         )
         host.showTimedLines(surface, consumeShow())
     }
 
-    /** Accumulates window words into timed lines up to a safe byte budget and line cap. */
-    private fun boundedLines(m: ReaderModel, range: IntRange): List<NexusTimedLine> {
+    /** Accumulates window words into relative-timed lines up to a CXR-safe byte budget. */
+    private fun boundedLines(m: ReaderModel, range: IntRange, baseMs: Long): List<NexusTimedLine> {
         val out = ArrayList<NexusTimedLine>()
-        var bytes = SURFACE_OVERHEAD_BYTES
+        var bytes = 0
         for (tw in m.timedWords(range)) {
             val text = tw.text.take(MAX_LINE_CHARS)
             val lineBytes = text.toByteArray(Charsets.UTF_8).size + PER_LINE_OVERHEAD_BYTES
-            if (out.isNotEmpty() && (bytes + lineBytes > SURFACE_BYTE_BUDGET || out.size >= MAX_TIMED_LINES)) break
-            out.add(NexusTimedLine(tw.timeMs, text))
+            if (out.isNotEmpty() && (bytes + lineBytes > LINE_BYTE_BUDGET || out.size >= WINDOW_WORDS)) break
+            out.add(NexusTimedLine((tw.timeMs - baseMs).coerceAtLeast(0L), text))
             bytes += lineBytes
         }
         return out
     }
 
-    private fun anchor(): NexusPlaybackAnchor =
+    private fun anchor(baseMs: Long = currentBaseMs()): NexusPlaybackAnchor =
         NexusPlaybackAnchor(
-            positionMs = anchorPosMs.coerceAtLeast(0L),
+            positionMs = (anchorPosMs - baseMs).coerceAtLeast(0L),
             playing = playing,
             sentAtElapsedRealtime = SystemClock.elapsedRealtime(),
         )
 
-    /** Current word index derived from the playback clock (no back-channel needed). */
-    private fun currentIndex(m: ReaderModel): Int {
+    private fun currentBaseMs(): Long {
+        val m = model ?: return 0L
+        if (windowRange.isEmpty()) return 0L
+        return m.posMsForWord(windowRange.first)
+    }
+
+    /** Freezes the anchor at the current predicted position (before re-windowing while playing). */
+    private fun reanchorToNow(m: ReaderModel) {
+        anchorPosMs = predictedPosMs(m)
+        sentAtElapsed = SystemClock.elapsedRealtime()
+    }
+
+    private fun predictedPosMs(m: ReaderModel): Long {
+        val maxMs = m.posMsForWord(m.size - 1)
         val pos = if (playing) {
             anchorPosMs + (SystemClock.elapsedRealtime() - sentAtElapsed).coerceAtLeast(0L)
         } else {
             anchorPosMs
         }
-        return m.wordIndexAt(pos)
+        return pos.coerceIn(0L, maxMs)
+    }
+
+    /** Current word index derived from the playback clock (no back-channel needed). */
+    private fun currentIndex(m: ReaderModel): Int = m.wordIndexAt(predictedPosMs(m))
+
+    private fun maybePersist() {
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastPersistElapsed >= PERSIST_INTERVAL_MS) persistProgress()
     }
 
     private fun persistProgress() {
         val m = model ?: return
-        if (docId.isNotEmpty()) store.updateProgress(docId, currentIndex(m))
+        if (docId.isNotEmpty()) {
+            store.updateProgress(docId, currentIndex(m))
+            lastPersistElapsed = SystemClock.elapsedRealtime()
+        }
     }
 
     private fun consumeShow(): Boolean {
@@ -361,15 +394,17 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     }
 
     private companion object {
-        const val TICK_MS = 4_000L
-        const val WINDOW_MARGIN = 120
+        const val TICK_MS = 750L
+        const val PERSIST_INTERVAL_MS = 4_000L
+        // Buffer sizing: kept small so each surface payload stays under the 3 KiB
+        // CXR control-message ceiling (works without the SPP data plane).
+        const val WINDOW_WORDS = 60
+        const val WINDOW_MARGIN = 18
+        const val LINE_BYTE_BUDGET = 1_900
+        const val PER_LINE_OVERHEAD_BYTES = 26
         const val MAX_TITLE_CHARS = 120
+        const val READER_TITLE_CHARS = 60
         const val MAX_LINE_CHARS = 240
         const val MAX_LINES = 64
-        const val MAX_TIMED_LINES = 2_000
-        // Keep the timed-lines payload comfortably under the hub's 64 KiB ceiling.
-        const val SURFACE_BYTE_BUDGET = 48_000
-        const val SURFACE_OVERHEAD_BYTES = 400
-        const val PER_LINE_OVERHEAD_BYTES = 26
     }
 }

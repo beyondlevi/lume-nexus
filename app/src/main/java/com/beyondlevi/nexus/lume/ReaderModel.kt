@@ -149,8 +149,10 @@ class ReaderModel(private val words: List<String>, initialWpm: Int) {
     }
 
     companion object {
-        const val DEFAULT_WINDOW = 800
+        // Small window: each rendered surface must stay under the hub's 3 KiB CXR
+        // control-message ceiling, so the reader streams a sliding buffer.
+        const val DEFAULT_WINDOW = 60
         const val MAX_WINDOW = 2_000
-        const val BACK_CONTEXT = 60
+        const val BACK_CONTEXT = 12
     }
 }
