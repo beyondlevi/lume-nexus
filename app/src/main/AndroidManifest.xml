@@ -65,6 +65,13 @@
             </intent-filter>
             <meta-data android:name="com.anezium.rokidbus.plugin.ID" android:value="lume" />
             <meta-data android:name="com.anezium.rokidbus.plugin.DISPLAY_NAME" android:value="Lume" />
+            <!-- Declare BOTH: the built-in ICON renders natively on the glasses
+                 launcher (a custom drawable lives in the phone APK and never
+                 reaches the glasses), while ICON_DRAWABLE is the phone-side glyph.
+                 The built-in currently wins everywhere; a later hub release flips
+                 the phone priority so you get the custom glyph on the phone and
+                 the built-in natively on the glasses. -->
+            <meta-data android:name="com.anezium.rokidbus.plugin.ICON" android:value="bookmark" />
             <meta-data android:name="com.anezium.rokidbus.plugin.ICON_DRAWABLE" android:resource="@drawable/nexus_glyph_lume" />
             <meta-data android:name="com.anezium.rokidbus.plugin.API_VERSION" android:value="3" />
             <meta-data android:name="com.anezium.rokidbus.plugin.CAPABILITIES" android:value="surfaces" />

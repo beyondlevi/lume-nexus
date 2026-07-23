@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.6
+
+- Icon: declare BOTH the built-in `ICON=bookmark` and
+  `ICON_DRAWABLE=@drawable/nexus_glyph_lume`. A custom drawable never reaches
+  the glasses launcher (it lives in the phone APK), so v1.0.5's drawable-only
+  setup showed the generic grid glyph on the glasses. With both declared the
+  built-in renders natively on the glasses today, and a later hub release will
+  show the custom glyph on the phone — best of both.
+
 ## 1.0.5
 
 - Glasses HUD icon now uses Lume's own RSVP glyph: the descriptor declares
