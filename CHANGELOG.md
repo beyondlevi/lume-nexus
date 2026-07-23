@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.5
+
+- Glasses HUD icon now uses Lume's own RSVP glyph: the descriptor declares
+  `ICON_DRAWABLE=@drawable/nexus_glyph_lume` (monochrome, Nexus-tinted) instead
+  of the built-in `bookmark`, so the same mark shows on the HUD and the Android
+  app icon.
+- PDF import is bounded to keep memory predictable: input size capped at 30 MB
+  and extraction capped at 800 pages, with a guard that degrades to no-text
+  instead of crashing on `OutOfMemoryError`.
+- Release built from the tagged commit (commit -> tag -> build -> publish) so
+  the published APK verifies against the descriptor.
+- Note: bumping the PdfBox-Android Bouncy Castle dependency is deferred as an
+  optional follow-up.
+
 ## 1.0.4
 
 Maintainer review fixes (Nexus Store).

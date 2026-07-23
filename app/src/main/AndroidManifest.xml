@@ -65,7 +65,7 @@
             </intent-filter>
             <meta-data android:name="com.anezium.rokidbus.plugin.ID" android:value="lume" />
             <meta-data android:name="com.anezium.rokidbus.plugin.DISPLAY_NAME" android:value="Lume" />
-            <meta-data android:name="com.anezium.rokidbus.plugin.ICON" android:value="bookmark" />
+            <meta-data android:name="com.anezium.rokidbus.plugin.ICON_DRAWABLE" android:resource="@drawable/nexus_glyph_lume" />
             <meta-data android:name="com.anezium.rokidbus.plugin.API_VERSION" android:value="3" />
             <meta-data android:name="com.anezium.rokidbus.plugin.CAPABILITIES" android:value="surfaces" />
             <meta-data android:name="com.anezium.rokidbus.plugin.RECEIVE_PREFIXES" android:value="/plugin/lume,/system/plugin" />

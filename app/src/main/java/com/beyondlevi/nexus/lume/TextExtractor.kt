@@ -14,6 +14,10 @@ import com.tom_roush.pdfbox.text.PDFTextStripper
 object TextExtractor {
     @Volatile private var pdfBoxReady = false
 
+    // Extraction bounds to keep memory/time predictable on large PDFs.
+    private const val MAX_PDF_BYTES = 30L * 1024 * 1024
+    private const val MAX_PDF_PAGES = 800
+
     data class Extracted(val title: String, val text: String, val source: String)
 
     /** Reads a `content://` (or `file://`) uri as PDF or plain text. */
@@ -32,15 +36,42 @@ object TextExtractor {
     }
 
     private fun extractPdf(context: Context, uri: Uri): String {
+        // Guard against huge PDFs that would OOM the (bundled, older) PdfBox/Bouncy
+        // Castle stack: cap the input size and the number of pages we extract.
+        val size = sizeOf(context, uri)
+        if (size in (MAX_PDF_BYTES + 1)..Long.MAX_VALUE) {
+            throw IllegalStateException("PDF too large: $size bytes (max $MAX_PDF_BYTES)")
+        }
         if (!pdfBoxReady) {
             PDFBoxResourceLoader.init(context.applicationContext)
             pdfBoxReady = true
         }
-        return context.contentResolver.openInputStream(uri)?.use { stream ->
-            PDDocument.load(stream).use { document ->
-                PDFTextStripper().getText(document)
+        return try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                PDDocument.load(stream).use { document ->
+                    val stripper = PDFTextStripper().apply {
+                        startPage = 1
+                        endPage = document.numberOfPages.coerceAtMost(MAX_PDF_PAGES)
+                    }
+                    stripper.getText(document)
+                }
+            }.orEmpty()
+        } catch (oom: OutOfMemoryError) {
+            // Degrade to "no text" rather than crashing the process.
+            ""
+        }
+    }
+
+    private fun sizeOf(context: Context, uri: Uri): Long {
+        runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                    if (idx >= 0 && !cursor.isNull(idx)) return cursor.getLong(idx)
+                }
             }
-        }.orEmpty()
+        }
+        return -1L
     }
 
     private fun displayName(context: Context, uri: Uri): String {
