@@ -11,7 +11,9 @@ internal object Strings {
     fun libraryFooter(lang: String) =
         if (lang == "pt") "toque abre · voltar sai" else "tap opens · back exits"
     fun readerPlayingFooter(lang: String) =
-        if (lang == "pt") "toque pausa · deslize velocidade · voltar" else "tap pause · swipe speed · back"
+        if (lang == "pt") "toque pausa · deslize velocidade · voltar sai" else "tap pause · swipe speed · back exits"
     fun readerPausedFooter(lang: String) =
-        if (lang == "pt") "toque continua · deslize frase · voltar" else "tap play · swipe sentence · back"
+        if (lang == "pt") "toque continua · deslize frase · voltar sai" else "tap play · swipe sentence · back exits"
+    fun cannotOpen(lang: String) =
+        if (lang == "pt") "Não foi possível abrir este documento." else "Could not open this document."
 }

@@ -30,6 +30,12 @@ class DocumentStore(context: Context) {
 
     fun documents(): List<DocumentInfo> = synchronized(lock) { index.toList() }
 
+    /** Re-reads the index from disk so a long-lived screen reflects documents
+     *  added by another entry point (the share target, or the reader's progress). */
+    fun reload() {
+        synchronized(lock) { index = loadIndex() }
+    }
+
     fun document(id: String): DocumentInfo? = synchronized(lock) { index.firstOrNull { it.id == id } }
 
     /** Adds a document from extracted plain text. Returns null when the text has no words. */

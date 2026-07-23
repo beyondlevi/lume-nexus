@@ -30,7 +30,15 @@ class LumeSettingsActivity : Activity() {
         buildUi()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Reflect documents added since the screen was built (e.g. via the share target).
+        store.reload()
+        buildUi()
+    }
+
     private fun buildUi() {
+        store.reload()
         val ctx = this
         val content = NexusUi.contentColumn(ctx).apply {
             addView(

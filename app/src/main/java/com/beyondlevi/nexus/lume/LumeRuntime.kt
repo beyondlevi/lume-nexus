@@ -18,12 +18,19 @@ import java.security.MessageDigest
  *
  * Ring mapping (R08 Access Bridge), mirroring the original touchpad:
  *  - LIBRARY: NEXT/PREV move selection, SELECT opens the focused document,
- *    BACK self-closes the plugin.
+ *    BACK exits the plugin.
  *  - READER:  SELECT toggles play/pause; while playing NEXT/PREV change speed;
- *    while paused NEXT/PREV step sentences; BACK returns to the library.
+ *    while paused NEXT/PREV step sentences; BACK exits the plugin.
  *
- * The heavy timeline math lives in [ReaderModel]; this class owns the playback
- * anchor (position/playing/clock), window paging and progress persistence.
+ * Platform note: a timed-lines surface cannot intercept BACK (the hub hides it
+ * on BACK), so — like the shipped Lyrics plugin — BACK from the reader closes
+ * the plugin rather than returning to the library. Re-open Lume to pick another
+ * document.
+ *
+ * Surface protocol (matches the shipped Transit/Lyrics plugins): a single
+ * surface id, shown once per session and updated thereafter; the card->timed
+ * transition goes through updateTimedLines, and play/pause/seek go through the
+ * anchor-only update.
  */
 class LumeRuntime(private val host: Host, private val store: DocumentStore, private val settings: SettingsStore) {
 
@@ -37,6 +44,7 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     private enum class View { LIBRARY, READER }
 
     private var active = false
+    private var shown = false
     private var view = View.LIBRARY
     private val library = LibrarySelection()
     private var documents: List<DocumentInfo> = emptyList()
@@ -63,9 +71,10 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
 
     fun open() {
         active = true
+        shown = false
         view = View.LIBRARY
         refreshLibrary()
-        renderLibrary(show = true)
+        renderLibrary()
     }
 
     fun close() {
@@ -78,9 +87,8 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     }
 
     fun registrationApproved() {
-        if (active) {
-            if (view == View.LIBRARY) renderLibrary(show = true) else renderReader(show = true)
-        }
+        if (!active) return
+        if (view == View.LIBRARY) renderLibrary() else renderReader()
     }
 
     fun input(event: NexusInputEvent) {
@@ -96,7 +104,7 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
             KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER,
             KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
             -> onSelect()
-            KeyEvent.KEYCODE_BACK -> onBack()
+            KeyEvent.KEYCODE_BACK -> close()
             else -> Unit
         }
     }
@@ -110,14 +118,14 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
 
     private fun onNext() {
         when (view) {
-            View.LIBRARY -> { library.move(1); renderLibrary(show = false) }
+            View.LIBRARY -> { library.move(1); renderLibrary() }
             View.READER -> if (playing) changeSpeed(RsvpEngine.WPM_STEP) else stepSentence(1)
         }
     }
 
     private fun onPrev() {
         when (view) {
-            View.LIBRARY -> { library.move(-1); renderLibrary(show = false) }
+            View.LIBRARY -> { library.move(-1); renderLibrary() }
             View.READER -> if (playing) changeSpeed(-RsvpEngine.WPM_STEP) else stepSentence(-1)
         }
     }
@@ -129,21 +137,7 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         }
     }
 
-    private fun onBack() {
-        when (view) {
-            View.LIBRARY -> close()
-            View.READER -> {
-                persistProgress()
-                stopTicker()
-                model = null
-                view = View.LIBRARY
-                refreshLibrary()
-                renderLibrary(show = true)
-            }
-        }
-    }
-
-    private fun renderLibrary(show: Boolean) {
+    private fun renderLibrary() {
         val lang = settings.language
         val card = if (documents.isEmpty()) {
             NexusCard(
@@ -170,14 +164,31 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
                 handlesBack = true,
             )
         }
-        host.showCard(card, show)
+        host.showCard(card, consumeShow())
+    }
+
+    /** A visible fallback card so the reader never silently fails to open. */
+    private fun renderMessage(message: String) {
+        host.showCard(
+            NexusCard(
+                title = "Lume",
+                lines = listOf(message),
+                footer = Strings.libraryEmptyFooter(settings.language),
+                contentKey = shortHash("msg:$message"),
+                handlesBack = true,
+            ),
+            consumeShow(),
+        )
     }
 
     /* ---------------- reader view ---------------- */
 
     private fun openDocument(doc: DocumentInfo) {
         val words = store.words(doc.id)
-        if (words.isEmpty()) return
+        if (words.isEmpty()) {
+            renderMessage(Strings.cannotOpen(settings.language))
+            return
+        }
         docId = doc.id
         docTitle = doc.title
         wpm = settings.lastWpm
@@ -189,7 +200,7 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         sentAtElapsed = SystemClock.elapsedRealtime()
         windowRange = m.windowRange(resume)
         view = View.READER
-        renderReader(show = true)
+        renderReader()
         startTicker()
     }
 
@@ -256,26 +267,43 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
             current >= windowRange.last - WINDOW_MARGIN
         if (!needsSlide) return
         windowRange = m.windowRange(current)
-        renderReader(show = false)
+        renderReader()
     }
 
-    private fun renderReader(show: Boolean) {
+    private fun renderReader() {
         val m = model ?: return
         if (windowRange.isEmpty()) windowRange = m.windowRange(currentIndex(m))
+        // Build the timed lines within a byte budget so the surface payload never
+        // exceeds the hub's 64 KiB ceiling (which would reject the whole surface).
+        val emitted = boundedLines(m, windowRange)
+        windowRange = windowRange.first until (windowRange.first + emitted.size)
         contentKey = shortHash("rd:$docId:$wpm:${windowRange.first}:${windowRange.last}")
-        val lines = m.timedWords(windowRange).map { NexusTimedLine(it.timeMs, it.text.take(MAX_LINE_CHARS)) }
         val lang = settings.language
         val cur = currentIndex(m)
         val pct = if (m.size > 0) cur * 100 / m.size else 0
         val surface = NexusTimedLines(
             title = docTitle.ifBlank { "Lume" }.take(MAX_TITLE_CHARS),
             contentKey = contentKey,
-            lines = lines,
+            lines = emitted,
             anchor = anchor(),
             subtitle = "$wpm wpm · $pct%",
             footer = if (playing) Strings.readerPlayingFooter(lang) else Strings.readerPausedFooter(lang),
         )
-        host.showTimedLines(surface, show)
+        host.showTimedLines(surface, consumeShow())
+    }
+
+    /** Accumulates window words into timed lines up to a safe byte budget and line cap. */
+    private fun boundedLines(m: ReaderModel, range: IntRange): List<NexusTimedLine> {
+        val out = ArrayList<NexusTimedLine>()
+        var bytes = SURFACE_OVERHEAD_BYTES
+        for (tw in m.timedWords(range)) {
+            val text = tw.text.take(MAX_LINE_CHARS)
+            val lineBytes = text.toByteArray(Charsets.UTF_8).size + PER_LINE_OVERHEAD_BYTES
+            if (out.isNotEmpty() && (bytes + lineBytes > SURFACE_BYTE_BUDGET || out.size >= MAX_TIMED_LINES)) break
+            out.add(NexusTimedLine(tw.timeMs, text))
+            bytes += lineBytes
+        }
+        return out
     }
 
     private fun anchor(): NexusPlaybackAnchor =
@@ -298,6 +326,12 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
     private fun persistProgress() {
         val m = model ?: return
         if (docId.isNotEmpty()) store.updateProgress(docId, currentIndex(m))
+    }
+
+    private fun consumeShow(): Boolean {
+        val show = !shown
+        shown = true
+        return show
     }
 
     private fun startTicker() {
@@ -332,5 +366,10 @@ class LumeRuntime(private val host: Host, private val store: DocumentStore, priv
         const val MAX_TITLE_CHARS = 120
         const val MAX_LINE_CHARS = 240
         const val MAX_LINES = 64
+        const val MAX_TIMED_LINES = 2_000
+        // Keep the timed-lines payload comfortably under the hub's 64 KiB ceiling.
+        const val SURFACE_BYTE_BUDGET = 48_000
+        const val SURFACE_OVERHEAD_BYTES = 400
+        const val PER_LINE_OVERHEAD_BYTES = 26
     }
 }
